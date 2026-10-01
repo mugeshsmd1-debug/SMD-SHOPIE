@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShoppingBag,
   Package,
@@ -6,8 +6,14 @@ import {
   Settings,
   AlertTriangle,
   Sparkles,
-  LogOut
+  LogOut,
+  Globe,
+  Wifi,
+  WifiOff,
+  Award,
+  Star
 } from 'lucide-react';
+import CustomersModal from './CustomersModal';
 
 export default function Navbar({
   activeTab,
@@ -18,12 +24,27 @@ export default function Navbar({
   user,
   onLogout
 }) {
+  const [showLoyaltyModal, setShowLoyaltyModal] = useState(false);
   const tabs = [
     { id: 'billing', label: 'POS Billing', icon: ShoppingBag, badge: cartCount > 0 ? cartCount : null, badgeColor: 'bg-indigo-500' },
     { id: 'inventory', label: 'Stock & Inventory', icon: Package, badge: lowStockCount > 0 ? lowStockCount : null, badgeColor: 'bg-amber-500' },
+    { id: 'storefront', label: 'Online Store', icon: Globe, badge: 'WhatsApp', badgeColor: 'bg-emerald-600' },
     { id: 'pnl', label: 'Reports & P&L', icon: TrendingUp },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
+
+  const [isOnline, setIsOnline] = React.useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  React.useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   return (
     <header className="sticky top-0 z-40 w-full backdrop-blur-xl bg-slate-900/80 border-b border-slate-800">
@@ -79,8 +100,32 @@ export default function Navbar({
             })}
           </nav>
 
-          {/* Right Section: Low Stock Warning & Owner Profile */}
+          {/* Right Section: Online Status, Loyalty CRM, Low Stock Warning & Owner Profile */}
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Quick Customer Loyalty CRM Directory Trigger */}
+            <button
+              type="button"
+              onClick={() => setShowLoyaltyModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 rounded-xl text-xs font-semibold transition cursor-pointer"
+              title="Customer Loyalty CRM & Points Directory"
+            >
+              <Award className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Loyalty CRM</span>
+            </button>
+
+            {/* Live Online / Offline Mode Badge */}
+            <div
+              className={`hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-bold border transition ${
+                isOnline
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                  : 'bg-rose-500/15 border-rose-500/40 text-rose-300 animate-pulse'
+              }`}
+              title={isOnline ? 'Connected to Cloud PostgreSQL' : 'Offline Mode: Zero-Lag Local Billing Active'}
+            >
+              {isOnline ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+              <span>{isOnline ? 'Online' : 'Offline'}</span>
+            </div>
+
             {lowStockCount > 0 && (
               <div
                 onClick={() => setActiveTab('inventory')}
@@ -123,6 +168,14 @@ export default function Navbar({
           </div>
         </div>
       </div>
+
+      {/* Loyalty Members CRM Modal */}
+      {showLoyaltyModal && (
+        <CustomersModal
+          settings={settings}
+          onClose={() => setShowLoyaltyModal(false)}
+        />
+      )}
     </header>
   );
 }

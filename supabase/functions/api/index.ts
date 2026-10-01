@@ -258,7 +258,7 @@ Deno.serve(async (req: Request) => {
 
       if (!body.name || !cleanSku) return errJson("Product name and SKU are required.");
 
-      const initialStock = parseInt(body.stock_quantity, 10) || 0;
+      const initialStock = parseFloat(body.stock_quantity) || 0;
       const threshold = parseInt(body.low_stock_threshold, 10) || 5;
       const gstPct = body.gst_percentage !== undefined ? parseFloat(body.gst_percentage) : 5.0;
 
@@ -276,6 +276,15 @@ Deno.serve(async (req: Request) => {
           unit: body.unit || "pcs",
           image_emoji: body.image_emoji || "📦",
           gst_percentage: gstPct,
+          is_bundle: Boolean(body.is_bundle),
+          bundle_items: Array.isArray(body.bundle_items) ? body.bundle_items : [],
+          is_grain_rice: Boolean(body.is_grain_rice),
+          bag_weight_kg: body.bag_weight_kg !== undefined ? parseFloat(body.bag_weight_kg) : 50,
+          open_bag_loose_kg: body.open_bag_loose_kg !== undefined ? parseFloat(body.open_bag_loose_kg) : 0,
+          bag_variants: Array.isArray(body.bag_variants) ? body.bag_variants : [],
+          allow_loose: body.allow_loose !== undefined ? Boolean(body.allow_loose) : true,
+          loose_selling_price: body.loose_selling_price !== undefined && body.loose_selling_price !== null && body.loose_selling_price !== '' ? parseFloat(body.loose_selling_price) : null,
+          loose_cost_price: body.loose_cost_price !== undefined && body.loose_cost_price !== null && body.loose_cost_price !== '' ? parseFloat(body.loose_cost_price) : null,
         })
         .select()
         .single();
@@ -301,6 +310,7 @@ Deno.serve(async (req: Request) => {
         cost_price: parseFloat(newProd.cost_price),
         selling_price: parseFloat(newProd.selling_price),
         gst_percentage: parseFloat(newProd.gst_percentage),
+        stock_quantity: parseFloat(newProd.stock_quantity),
       }, 201);
     }
 
@@ -368,7 +378,7 @@ Deno.serve(async (req: Request) => {
         if (getErr || !current) return errJson("Product not found.", 404);
 
         const cleanSku = body.sku ? String(body.sku).trim().toUpperCase() : current.sku;
-        const newStock = body.stock_quantity !== undefined ? parseInt(body.stock_quantity, 10) : current.stock_quantity;
+        const newStock = body.stock_quantity !== undefined ? parseFloat(body.stock_quantity) : current.stock_quantity;
         const stockDiff = newStock - current.stock_quantity;
 
         const updatePayload: any = { sku: cleanSku, updated_at: new Date().toISOString() };
@@ -381,6 +391,15 @@ Deno.serve(async (req: Request) => {
         if (body.unit !== undefined) updatePayload.unit = body.unit;
         if (body.image_emoji !== undefined) updatePayload.image_emoji = body.image_emoji;
         if (body.gst_percentage !== undefined) updatePayload.gst_percentage = parseFloat(body.gst_percentage);
+        if (body.is_bundle !== undefined) updatePayload.is_bundle = Boolean(body.is_bundle);
+        if (body.bundle_items !== undefined) updatePayload.bundle_items = Array.isArray(body.bundle_items) ? body.bundle_items : [];
+        if (body.is_grain_rice !== undefined) updatePayload.is_grain_rice = Boolean(body.is_grain_rice);
+        if (body.bag_weight_kg !== undefined) updatePayload.bag_weight_kg = parseFloat(body.bag_weight_kg);
+        if (body.open_bag_loose_kg !== undefined) updatePayload.open_bag_loose_kg = parseFloat(body.open_bag_loose_kg);
+        if (body.bag_variants !== undefined) updatePayload.bag_variants = Array.isArray(body.bag_variants) ? body.bag_variants : [];
+        if (body.allow_loose !== undefined) updatePayload.allow_loose = Boolean(body.allow_loose);
+        if (body.loose_selling_price !== undefined) updatePayload.loose_selling_price = body.loose_selling_price !== null && body.loose_selling_price !== '' ? parseFloat(body.loose_selling_price) : null;
+        if (body.loose_cost_price !== undefined) updatePayload.loose_cost_price = body.loose_cost_price !== null && body.loose_cost_price !== '' ? parseFloat(body.loose_cost_price) : null;
 
         const { data: updated, error: updateErr } = await supabase
           .from("products")
@@ -421,13 +440,41 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    const openBagMatch = normPath.match(/^\/products\/(\d+)\/open-bag$/);
+    if (openBagMatch && req.method === "POST") {
+      if (!userEmail) return errJson("Authentication required", 401);
+      const id = parseInt(openBagMatch[1], 10);
+      const body = await req.json().catch(() => ({}));
+      const bags = parseInt(body.bags, 10) || 1;
+
+      const { data, error } = await supabase.rpc("open_sealed_bag_for_loose", {
+        p_product_id: id,
+        p_user_email: userEmail,
+        p_bags_to_open: bags,
+      });
+
+      if (error) return errJson(error.message);
+      return json(data);
+    }
+
     // ----------------------------------------------------
     // ORDERS & BILLING
     // ----------------------------------------------------
     if (req.method === "POST" && normPath === "/orders") {
       if (!userEmail) return errJson("Authentication required", 401);
       const body = await req.json();
-      const { items, customer_name, customer_phone, discount_amount = 0, tax_percentage, payment_method = "Cash" } = body;
+      const {
+        items,
+        customer_name,
+        customer_phone,
+        discount_amount = 0,
+        tax_percentage,
+        payment_method = "Cash",
+        counter_name = "Counter 1",
+        loyalty_points_earned = 0,
+        loyalty_points_redeemed = 0,
+        loyalty_discount_amount = 0,
+      } = body;
 
       if (!items || !Array.isArray(items) || items.length === 0) {
         return errJson("Cart is empty. Add items to create a bill.");
@@ -451,17 +498,86 @@ Deno.serve(async (req: Request) => {
       const verifiedItems: any[] = [];
 
       for (const item of items) {
-        const prod = productMap.get(item.id);
+        const prod: any = productMap.get(item.id);
         if (!prod) return errJson(`Product not found (ID: ${item.id})`);
 
-        const qty = parseInt(item.quantity, 10);
-        if (qty <= 0) return errJson(`Invalid quantity for ${prod.name}`);
-        if (prod.stock_quantity < qty) {
-          return errJson(`Insufficient stock for "${prod.name}". Available: ${prod.stock_quantity}, Requested: ${qty}`);
+        const qty = parseFloat(item.quantity);
+        if (isNaN(qty) || qty <= 0) return errJson(`Invalid quantity for ${prod.name}`);
+
+        const bagWeight = item.bag_weight ? parseFloat(item.bag_weight) : null;
+        const isLoose = Boolean(item.is_loose);
+        const isGrain = Boolean(prod.is_grain_rice);
+
+        // Determine stock deduction quantity (in kg or pcs)
+        let stockDeductQty = qty;
+        let displayName = prod.name;
+        let sellingPrice = parseFloat(prod.selling_price);
+        let costPrice = parseFloat(prod.cost_price);
+
+        if (isGrain && isLoose) {
+          displayName = item.display_name || `${prod.name} (Loose)`;
+          stockDeductQty = qty; // in kg
+          if (item.selling_price !== undefined) {
+            sellingPrice = parseFloat(item.selling_price);
+          } else if (prod.loose_selling_price !== null && prod.loose_selling_price !== undefined) {
+            sellingPrice = parseFloat(prod.loose_selling_price);
+          } else {
+            sellingPrice = 30;
+          }
+
+          const bagWt = parseFloat(prod.bag_weight_kg) || 50;
+          if (item.cost_price !== undefined) {
+            costPrice = parseFloat(item.cost_price);
+          } else if (prod.loose_cost_price !== null && prod.loose_cost_price !== undefined) {
+            costPrice = parseFloat(prod.loose_cost_price);
+          } else {
+            costPrice = parseFloat((parseFloat(prod.cost_price) / bagWt).toFixed(2));
+          }
+
+          const totalCapacityKg = (parseFloat(prod.stock_quantity) || 0) * bagWt + (parseFloat(prod.open_bag_loose_kg) || 0);
+          if (totalCapacityKg < qty) {
+            return errJson(`Insufficient stock for "${displayName}". Needed: ${qty} kg, Total Available in store: ${totalCapacityKg} kg`);
+          }
+        } else if (isGrain && !isLoose) {
+          const bagWt = bagWeight || parseFloat(prod.bag_weight_kg) || 50;
+          displayName = item.display_name || `${prod.name} (${bagWt} kg Sealed Bag)`;
+          stockDeductQty = qty; // in bags
+
+          if (item.selling_price !== undefined) {
+            sellingPrice = parseFloat(item.selling_price);
+          } else {
+            sellingPrice = parseFloat(prod.selling_price);
+          }
+
+          if (item.cost_price !== undefined) {
+            costPrice = parseFloat(item.cost_price);
+          } else {
+            costPrice = parseFloat(prod.cost_price);
+          }
+
+          const availBags = parseFloat(prod.stock_quantity) || 0;
+          if (availBags < qty) {
+            return errJson(`Insufficient sealed bags for "${displayName}". Available: ${availBags} bags, Needed: ${qty} bags`);
+          }
+        } else {
+          if (item.selling_price !== undefined) {
+            sellingPrice = parseFloat(item.selling_price);
+          }
+          if (!prod.is_bundle && parseFloat(prod.stock_quantity) < qty) {
+            return errJson(`Insufficient stock for "${displayName}". Available: ${prod.stock_quantity} ${prod.unit || 'units'}, Needed: ${qty} ${prod.unit || 'units'}`);
+          }
         }
 
-        const sellingPrice = parseFloat(prod.selling_price);
-        const costPrice = parseFloat(prod.cost_price);
+        // Bundle component cost computation
+        if (prod.is_bundle && costPrice <= 0 && Array.isArray(prod.bundle_items) && prod.bundle_items.length > 0) {
+          const compIds = prod.bundle_items.map((b: any) => b.product_id).filter(Boolean);
+          if (compIds.length > 0) {
+            const { data: comps } = await supabase.from("products").select("id, cost_price").in("id", compIds);
+            const cMap = new Map((comps || []).map((c: any) => [c.id, parseFloat(c.cost_price) || 0]));
+            costPrice = prod.bundle_items.reduce((s: number, bi: any) => s + (cMap.get(bi.product_id) || 0) * (parseFloat(bi.quantity) || 1), 0);
+          }
+        }
+
         const itemSubtotal = sellingPrice * qty;
         const itemCost = costPrice * qty;
         const itemProfit = (sellingPrice - costPrice) * qty;
@@ -475,7 +591,7 @@ Deno.serve(async (req: Request) => {
 
         verifiedItems.push({
           id: prod.id,
-          name: prod.name,
+          name: displayName,
           sku: prod.sku,
           selling_price: sellingPrice,
           cost_price: costPrice,
@@ -483,10 +599,14 @@ Deno.serve(async (req: Request) => {
           subtotal: itemSubtotal,
           profit: itemProfit,
           gst_percentage: isNaN(itemGst) ? 0 : itemGst,
+          stock_deduct_quantity: stockDeductQty,
+          bag_weight: bagWeight,
+          is_loose: isLoose,
         });
       }
 
-      const discount = Math.min(subtotal, Math.max(0, parseFloat(discount_amount) || 0));
+      const totalDiscountDeduction = (parseFloat(discount_amount) || 0) + (parseFloat(loyalty_discount_amount) || 0);
+      const discount = Math.min(subtotal, Math.max(0, totalDiscountDeduction));
       const discountRatio = subtotal > 0 ? (subtotal - discount) / subtotal : 1;
 
       let totalTaxAmount = 0;
@@ -524,6 +644,10 @@ Deno.serve(async (req: Request) => {
         p_payment_method: payment_method || "Cash",
         p_invoice_no: invoiceNo,
         p_items: verifiedItems,
+        p_counter_name: counter_name || "Counter 1",
+        p_loyalty_earned: parseFloat(loyalty_points_earned) || 0,
+        p_loyalty_redeemed: parseFloat(loyalty_points_redeemed) || 0,
+        p_loyalty_discount: parseFloat(loyalty_discount_amount) || 0,
       });
 
       if (rpcErr) return errJson(rpcErr.message);
@@ -532,6 +656,7 @@ Deno.serve(async (req: Request) => {
         orderId: rpcRes?.orderId,
         invoiceNo,
         invoice_no: invoiceNo,
+        counter_name: counter_name || "Counter 1",
         customer_name: customer_name || "Walk-in Customer",
         customer_phone: customer_phone || "",
         subtotal: parseFloat(subtotal.toFixed(2)),
@@ -541,6 +666,10 @@ Deno.serve(async (req: Request) => {
         total_cost: parseFloat(totalCost.toFixed(2)),
         profit: netProfit,
         payment_method: payment_method || "Cash",
+        loyalty_points_earned: rpcRes?.loyalty_points_earned ?? (parseFloat(loyalty_points_earned) || 0),
+        loyalty_points_redeemed: rpcRes?.loyalty_points_redeemed ?? (parseFloat(loyalty_points_redeemed) || 0),
+        loyalty_discount_amount: parseFloat(loyalty_discount_amount) || 0,
+        customer_points_balance: rpcRes?.customer_points_balance ?? 0,
         created_at: new Date().toISOString(),
         items: verifiedItems.map((vi) => ({
           name: vi.name,
@@ -553,9 +682,123 @@ Deno.serve(async (req: Request) => {
           gst_percentage: vi.gst_percentage,
           tax_amount: vi.tax_amount,
           profit: vi.profit,
+          bag_weight: vi.bag_weight,
+          is_loose: vi.is_loose,
+          stock_deduct_quantity: vi.stock_deduct_quantity,
         })),
       }, 201);
     }
+
+    // ----------------------------------------------------
+    // CUSTOMER CRM & LOYALTY POINTS
+    // ----------------------------------------------------
+    if (req.method === "GET" && normPath === "/customers") {
+      if (!userEmail) return json([]);
+      const search = (url.searchParams.get("search") || "").trim().toLowerCase();
+      const limit = parseInt(url.searchParams.get("limit") || "100", 10);
+
+      let query = supabase
+        .from("customers")
+        .select("*")
+        .eq("user_email", userEmail)
+        .order("points_balance", { ascending: false })
+        .limit(limit);
+
+      if (search) {
+        query = query.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
+      }
+
+      const { data, error } = await query;
+      if (error) return errJson(error.message);
+      return json((data || []).map((c: any) => ({
+        ...c,
+        points_balance: parseFloat(c.points_balance) || 0,
+        total_spent: parseFloat(c.total_spent) || 0,
+        visit_count: parseInt(c.visit_count) || 0,
+      })));
+    }
+
+    if (req.method === "GET" && normPath.startsWith("/customers/lookup/")) {
+      if (!userEmail) return json(null);
+      const cleanPhone = normPath.replace("/customers/lookup/", "").trim();
+      if (!cleanPhone) return json(null);
+
+      const { data, error } = await supabase
+        .from("customers")
+        .select("*")
+        .eq("user_email", userEmail)
+        .eq("phone", cleanPhone)
+        .maybeSingle();
+
+      if (error) return errJson(error.message);
+      if (!data) return json(null);
+
+      return json({
+        ...data,
+        points_balance: parseFloat(data.points_balance) || 0,
+        total_spent: parseFloat(data.total_spent) || 0,
+        visit_count: parseInt(data.visit_count) || 0,
+      });
+    }
+
+    if (req.method === "POST" && normPath === "/customers") {
+      if (!userEmail) return errJson("Authentication required", 401);
+      const body = await req.json();
+      const { name, phone, points_balance } = body;
+      if (!phone || !phone.trim()) return errJson("Customer phone number is required.");
+
+      const { data, error } = await supabase
+        .from("customers")
+        .upsert({
+          user_email: userEmail,
+          name: name ? name.trim() : "Valued Customer",
+          phone: phone.trim(),
+          points_balance: parseFloat(points_balance) || 0,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "user_email,phone" })
+        .select()
+        .single();
+
+      if (error) return errJson(error.message);
+      return json(data, 201);
+    }
+
+    if (req.method === "PATCH" && normPath.match(/^\/customers\/\d+\/points$/)) {
+      if (!userEmail) return errJson("Authentication required", 401);
+      const custId = normPath.split("/")[2];
+      const body = await req.json();
+      const { points_delta, points_balance } = body;
+
+      const { data: cust, error: fetchErr } = await supabase
+        .from("customers")
+        .select("*")
+        .eq("id", custId)
+        .eq("user_email", userEmail)
+        .single();
+
+      if (fetchErr || !cust) return errJson("Customer not found.", 404);
+
+      let newBalance = cust.points_balance;
+      if (points_balance !== undefined) {
+        newBalance = Math.max(0, parseFloat(points_balance) || 0);
+      } else if (points_delta !== undefined) {
+        newBalance = Math.max(0, (parseFloat(cust.points_balance) || 0) + (parseFloat(points_delta) || 0));
+      }
+
+      const { data: updated, error: updateErr } = await supabase
+        .from("customers")
+        .update({
+          points_balance: newBalance,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", custId)
+        .select()
+        .single();
+
+      if (updateErr) return errJson(updateErr.message);
+      return json(updated);
+    }
+
 
     if (req.method === "GET" && normPath === "/orders") {
       if (!userEmail) return json([]);
@@ -623,6 +866,112 @@ Deno.serve(async (req: Request) => {
           tax_amount: parseFloat(i.tax_amount),
           profit: parseFloat(i.profit),
         })),
+      });
+    }
+
+    // POST /orders/:id/return - Process Sales Return / Item Exchange & Issue Credit Note
+    const returnMatch = normPath.match(/^\/orders\/(.+)\/return$/);
+    if (returnMatch && req.method === "POST") {
+      if (!userEmail) return errJson("Authentication required", 401);
+      const orderId = returnMatch[1];
+      const body = await req.json();
+      const { items = [], refund_type = "Cash", reason = "Customer Return" } = body;
+      if (!items.length) return errJson("No items selected for return");
+
+      let orderQuery = supabase.from("orders").select("*, order_items(*)").eq("user_email", userEmail);
+      if (!isNaN(Number(orderId)) && !orderId.startsWith("INV-")) {
+        orderQuery = orderQuery.eq("id", parseInt(orderId, 10));
+      } else {
+        orderQuery = orderQuery.eq("invoice_no", orderId);
+      }
+
+      const { data: order, error: orderErr } = await orderQuery.single();
+      if (orderErr || !order) return errJson("Order not found", 404);
+
+      let totalRefundAmount = 0;
+      let totalCostReversed = 0;
+      const returnedSummary = [];
+
+      for (const item of items) {
+        const returnQty = parseFloat(item.quantity) || 0;
+        if (returnQty <= 0) continue;
+
+        const orderItem = (order.order_items || []).find(
+          (oi: any) => oi.id === item.order_item_id || oi.product_id === item.product_id
+        );
+        if (!orderItem) continue;
+
+        const unitSelling = parseFloat(orderItem.selling_price) || 0;
+        const unitCost = parseFloat(orderItem.cost_price) || 0;
+        const gstPct = parseFloat(orderItem.gst_percentage) || 0;
+
+        const itemSubtotal = unitSelling * returnQty;
+        const itemTax = itemSubtotal * (gstPct / 100);
+        const itemRefund = itemSubtotal + itemTax;
+        const itemCost = unitCost * returnQty;
+
+        totalRefundAmount += itemRefund;
+        totalCostReversed += itemCost;
+
+        if (item.restock !== false) {
+          const { data: currentProd } = await supabase
+            .from("products")
+            .select("stock_quantity")
+            .eq("id", orderItem.product_id)
+            .eq("user_email", userEmail)
+            .single();
+
+          if (currentProd) {
+            const newQty = (parseFloat(currentProd.stock_quantity) || 0) + returnQty;
+            await supabase
+              .from("products")
+              .update({ stock_quantity: newQty, updated_at: new Date().toISOString() })
+              .eq("id", orderItem.product_id);
+
+            await supabase.from("stock_logs").insert({
+              user_email: userEmail,
+              product_id: orderItem.product_id,
+              type: "RETURN",
+              quantity_change: returnQty,
+              quantity_after: newQty,
+              note: `Returned from invoice ${order.invoice_no} (${reason})`,
+            });
+          }
+        }
+
+        returnedSummary.push({
+          product_name: orderItem.product_name,
+          quantity: returnQty,
+          refund: itemRefund,
+          reason,
+        });
+      }
+
+      const newTotal = Math.max(0, parseFloat((order.total_amount - totalRefundAmount).toFixed(2)));
+      const newCost = Math.max(0, parseFloat((order.total_cost - totalCostReversed).toFixed(2)));
+      const newProfit = parseFloat((newTotal - newCost).toFixed(2));
+
+      await supabase
+        .from("orders")
+        .update({
+          total_amount: newTotal,
+          total_cost: newCost,
+          profit: newProfit,
+          payment_method: `${order.payment_method} (Returned ${totalRefundAmount > 0 ? "Partial" : ""})`,
+        })
+        .eq("id", order.id);
+
+      const creditNoteNo = `CN-${Date.now().toString().slice(-6)}`;
+
+      return json({
+        success: true,
+        credit_note_no: creditNoteNo,
+        original_invoice: order.invoice_no,
+        customer_name: order.customer_name,
+        refund_amount: parseFloat(totalRefundAmount.toFixed(2)),
+        refund_type,
+        returned_items: returnedSummary,
+        created_at: new Date().toISOString(),
       });
     }
 
@@ -938,6 +1287,258 @@ Deno.serve(async (req: Request) => {
           low_stock_count: prods.filter((p: any) => p.stock_quantity <= p.low_stock_threshold && p.stock_quantity > 0).length,
           out_of_stock_count: prods.filter((p: any) => p.stock_quantity === 0).length,
         },
+      });
+    }
+
+    // ----------------------------------------------------
+    // INVENTORY STOCK AUDIT LOGS
+    // ----------------------------------------------------
+    if (req.method === "GET" && normPath === "/inventory/logs") {
+      if (!userEmail) return errJson("Authentication required", 401);
+      const limit = parseInt(url.searchParams.get("limit") || "100", 10);
+
+      const { data: logs, error } = await supabase
+        .from("stock_logs")
+        .select("*, products(name, sku, category)")
+        .eq("user_email", userEmail)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (error) return errJson(error.message);
+
+      return json(
+        (logs || []).map((l: any) => ({
+          ...l,
+          product_name: l.products?.name || "Item",
+          product_sku: l.products?.sku || "",
+          category: l.products?.category || "General",
+        }))
+      );
+    }
+
+    // ---------------------------------------------
+    // AI REORDER & DEPLETION FORECASTING
+    // ---------------------------------------------
+    if (req.method === "GET" && normPath === "/analytics/reorder-forecast") {
+      if (!userEmail) return errJson("Authentication required", 401);
+
+      const { data: products, error: prodErr } = await supabase
+        .from("products")
+        .select("*")
+        .eq("user_email", userEmail);
+      if (prodErr) return errJson(prodErr.message);
+
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
+      const { data: recentOrders, error: orderErr } = await supabase
+        .from("orders")
+        .select("id, created_at, order_items(product_id, quantity)")
+        .eq("user_email", userEmail)
+        .gte("created_at", thirtyDaysAgo);
+      if (orderErr) return errJson(orderErr.message);
+
+      const salesMap: Record<string, number> = {};
+      (recentOrders || []).forEach((order: any) => {
+        (order.order_items || []).forEach((item: any) => {
+          const pId = item.product_id;
+          const qty = parseFloat(item.quantity) || 0;
+          salesMap[pId] = (salesMap[pId] || 0) + qty;
+        });
+      });
+
+      const forecastList = (products || []).map((p: any) => {
+        const sold30d = salesMap[p.id] || 0;
+        const dailyVelocity = parseFloat((sold30d / 30).toFixed(2));
+        const currentStock = parseFloat(p.stock_quantity) || 0;
+        const costPrice = parseFloat(p.cost_price) || 0;
+        const sellingPrice = parseFloat(p.selling_price) || 0;
+
+        let daysRemaining = dailyVelocity > 0 ? parseFloat((currentStock / dailyVelocity).toFixed(1)) : 999;
+        let urgency = "HEALTHY";
+        if (currentStock === 0) {
+          urgency = "OUT_OF_STOCK";
+        } else if (daysRemaining <= 3 || currentStock <= p.low_stock_threshold) {
+          urgency = "CRITICAL";
+        } else if (daysRemaining <= 7) {
+          urgency = "LOW";
+        } else if (sold30d === 0 && currentStock > 0) {
+          urgency = "SLOW_MOVING";
+        }
+
+        const targetBuffer = Math.max(10, Math.ceil(dailyVelocity * 14));
+        const recommendedQty = Math.max(0, targetBuffer - currentStock);
+        const estimatedCost = parseFloat((recommendedQty * costPrice).toFixed(2));
+
+        return {
+          id: p.id,
+          name: p.name,
+          sku: p.sku,
+          category: p.category,
+          unit: p.unit || "pcs",
+          current_stock: currentStock,
+          low_stock_threshold: p.low_stock_threshold,
+          cost_price: costPrice,
+          selling_price: sellingPrice,
+          units_sold_30d: sold30d,
+          daily_velocity: dailyVelocity,
+          days_remaining: daysRemaining,
+          urgency,
+          recommended_reorder_qty: recommendedQty,
+          estimated_reorder_cost: estimatedCost,
+        };
+      });
+
+      const urgencyWeight: Record<string, number> = { OUT_OF_STOCK: 1, CRITICAL: 2, LOW: 3, HEALTHY: 4, SLOW_MOVING: 5 };
+      forecastList.sort((a: any, b: any) => (urgencyWeight[a.urgency] || 99) - (urgencyWeight[b.urgency] || 99));
+
+      const totalCritical = forecastList.filter((f: any) => f.urgency === "CRITICAL" || f.urgency === "OUT_OF_STOCK").length;
+      const totalRecommendedCost = forecastList.reduce((sum: number, f: any) => sum + f.estimated_reorder_cost, 0);
+
+      return json({
+        items: forecastList,
+        summary: {
+          total_products: forecastList.length,
+          critical_count: totalCritical,
+          total_recommended_cost: parseFloat(totalRecommendedCost.toFixed(2)),
+        },
+      });
+    }
+
+    // ---------------------------------------------
+    // PUBLIC STOREFRONT & WHATSAPP CATALOG
+    // ---------------------------------------------
+    if (req.method === "GET" && normPath === "/public/store") {
+      const email = (url.searchParams.get("email") || url.searchParams.get("shop") || "").trim().toLowerCase();
+      if (!email) return errJson("Store email or shop identifier is required");
+
+      const { data: settings } = await supabase
+        .from("settings")
+        .select("shop_name, tagline, phone, address, currency_symbol")
+        .eq("user_email", email)
+        .maybeSingle();
+
+      const { data: user } = await supabase
+        .from("users")
+        .select("shop_name, phone, name")
+        .eq("email", email)
+        .maybeSingle();
+
+      const { data: products, error: pErr } = await supabase
+        .from("products")
+        .select("id, name, sku, category, selling_price, stock_quantity, unit, gst_percentage, image_emoji, is_bundle")
+        .eq("user_email", email);
+
+      if (pErr) return errJson(pErr.message);
+
+      return json({
+        shop: {
+          email,
+          shop_name: settings?.shop_name || user?.shop_name || "MS Store",
+          tagline: settings?.tagline || "Online Store & Catalog",
+          phone: settings?.phone || user?.phone || "",
+          address: settings?.address || "",
+          currency_symbol: settings?.currency_symbol || "₹",
+        },
+        products: (products || []).filter((p: any) => (parseFloat(p.stock_quantity) || 0) > 0 || p.is_bundle).map((p: any) => ({
+          ...p,
+          selling_price: parseFloat(p.selling_price) || 0,
+        })),
+        categories: [...new Set((products || []).map((p: any) => p.category).filter(Boolean))],
+      });
+    }
+
+    if (req.method === "POST" && normPath === "/public/orders") {
+      const body = await req.json();
+      const { store_email, customer_name, customer_phone, items } = body;
+      if (!store_email) return errJson("Store email is required");
+      if (!items || items.length === 0) return errJson("Cart is empty");
+
+      const { data: settings } = await supabase.from("settings").select("*").eq("user_email", store_email).maybeSingle();
+      const taxRate = parseFloat(settings?.tax_percentage) || 5.0;
+
+      const productIds = items.map((i: any) => i.id);
+      const { data: dbProducts } = await supabase
+        .from("products")
+        .select("*")
+        .eq("user_email", store_email)
+        .in("id", productIds);
+
+      const prodMap: Record<string, any> = {};
+      (dbProducts || []).forEach((p: any) => {
+        prodMap[p.id] = p;
+      });
+
+      let subtotal = 0;
+      let totalCost = 0;
+      const orderItems = [];
+
+      for (const item of items) {
+        const p = prodMap[item.id];
+        if (!p) continue;
+        const qty = Math.max(1, parseFloat(item.quantity) || 1);
+        const sellPrice = parseFloat(p.selling_price) || 0;
+        const costPrice = parseFloat(p.cost_price) || 0;
+        const itemSubtotal = sellPrice * qty;
+        const gstPct = p.gst_percentage !== undefined ? parseFloat(p.gst_percentage) : taxRate;
+        const taxAmt = itemSubtotal * (gstPct / 100);
+        const profit = (sellPrice - costPrice) * qty;
+
+        subtotal += itemSubtotal;
+        totalCost += costPrice * qty;
+
+        orderItems.push({
+          product_id: p.id,
+          product_name: p.name,
+          quantity: qty,
+          cost_price: costPrice,
+          selling_price: sellPrice,
+          subtotal: itemSubtotal,
+          gst_percentage: gstPct,
+          tax_amount: taxAmt,
+          profit,
+        });
+      }
+
+      const taxAmount = orderItems.reduce((acc, i) => acc + i.tax_amount, 0);
+      const totalAmount = subtotal + taxAmount;
+      const invoiceNo = `WA-${Date.now().toString().slice(-6)}`;
+
+      const { data: newOrder, error: orderErr } = await supabase
+        .from("orders")
+        .insert({
+          user_email: store_email,
+          invoice_no: invoiceNo,
+          customer_name: customer_name || "Online Customer",
+          customer_phone: customer_phone || "",
+          subtotal,
+          discount_amount: 0,
+          tax_amount: taxAmount,
+          total_amount: totalAmount,
+          total_cost: totalCost,
+          profit: subtotal - totalCost,
+          payment_method: "WhatsApp / Cash on Delivery",
+          created_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (orderErr) return errJson(orderErr.message);
+
+      const itemsToInsert = orderItems.map((i) => ({ ...i, order_id: newOrder.id }));
+      await supabase.from("order_items").insert(itemsToInsert);
+
+      for (const item of items) {
+        const p = prodMap[item.id];
+        if (p) {
+          const newStock = Math.max(0, (parseFloat(p.stock_quantity) || 0) - item.quantity);
+          await supabase.from("products").update({ stock_quantity: newStock }).eq("id", p.id);
+        }
+      }
+
+      return json({
+        success: true,
+        invoice_no: invoiceNo,
+        order_id: newOrder.id,
+        total_amount: totalAmount,
       });
     }
 

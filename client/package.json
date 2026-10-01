@@ -1,5 +1,5 @@
 {
-  "name": "client",
+  "name": "smd-shopie-client",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -17,6 +17,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tailwindcss": "^4.3.3",
+    "tesseract.js": "^7.0.0",
     "three": "^0.186.1"
   },
   "devDependencies": {

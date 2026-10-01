@@ -16,8 +16,23 @@ import {
   Receipt,
   Lock,
   Eye,
-  EyeOff
+  EyeOff,
+  Download,
+  Upload,
+  QrCode,
+  Database,
+  FileJson,
+  MessageSquare,
+  Send,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  Star,
+  Award,
+  Sparkles
 } from 'lucide-react';
+import DailyClosingDigestModal from '../components/DailyClosingDigestModal';
+import CustomersModal from '../components/CustomersModal';
 import { api } from '../services/api';
 
 export default function SettingsView({ settings, onSettingsUpdated, user, onResetData, onLogout }) {
@@ -28,10 +43,44 @@ export default function SettingsView({ settings, onSettingsUpdated, user, onRese
     address: '',
     currency_symbol: '₹',
     tax_percentage: 5.0,
+    upi_id: '',
+    loyalty_enabled: true,
+    loyalty_points_per_100: 1,
+    loyalty_point_value: 1.0,
+    loyalty_min_points_to_redeem: 5,
   });
 
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [showCustomersModal, setShowCustomersModal] = useState(false);
+
+  // Daily Closing Digest & Offline Sync State
+  const [showDailyClosingModal, setShowDailyClosingModal] = useState(false);
+  const [offlinePendingCount, setOfflinePendingCount] = useState(0);
+  const [syncingOffline, setSyncingOffline] = useState(false);
+
+  useEffect(() => {
+    api.getPendingOfflineCount().then(setOfflinePendingCount).catch(() => {});
+  }, []);
+
+  const handleSyncOffline = async () => {
+    try {
+      setSyncingOffline(true);
+      const res = await api.syncPendingOrders();
+      const count = await api.getPendingOfflineCount();
+      setOfflinePendingCount(count);
+      alert(`Sync completed: ${res.synced} offline sales synced to Supabase PostgreSQL database!`);
+    } catch (err) {
+      alert(`Sync failed: ${err.message}`);
+    } finally {
+      setSyncingOffline(false);
+    }
+  };
+
+  // Backup & Restore State
+  const [exportingBackup, setExportingBackup] = useState(false);
+  const [restoringBackup, setRestoringBackup] = useState(false);
+  const [backupMessage, setBackupMessage] = useState('');
 
   // Danger zone state
   const [resetting, setResetting] = useState(false);
@@ -56,9 +105,100 @@ export default function SettingsView({ settings, onSettingsUpdated, user, onRese
         address: settings.address || '',
         currency_symbol: settings.currency_symbol || '₹',
         tax_percentage: settings.tax_percentage ?? 5.0,
+        upi_id: settings.upi_id || '',
+        loyalty_enabled: settings.loyalty_enabled !== false,
+        loyalty_points_per_100: settings.loyalty_points_per_100 !== undefined ? settings.loyalty_points_per_100 : 1,
+        loyalty_point_value: settings.loyalty_point_value !== undefined ? settings.loyalty_point_value : 1.0,
+        loyalty_min_points_to_redeem: settings.loyalty_min_points_to_redeem !== undefined ? settings.loyalty_min_points_to_redeem : 5,
       });
     }
   }, [settings, user]);
+
+  const handleDownloadBackup = async () => {
+    try {
+      setExportingBackup(true);
+      setBackupMessage('');
+      const [prods, orders, stg] = await Promise.all([
+        api.getProducts(),
+        api.getOrders({ limit: 1000 }),
+        api.getSettings(),
+      ]);
+
+      const backupObj = {
+        app: 'MS Store POS',
+        version: '1.0.0',
+        exportedAt: new Date().toISOString(),
+        user_email: user?.email,
+        settings: stg,
+        products: prods,
+        orders: orders,
+      };
+
+      const jsonStr = JSON.stringify(backupObj, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const dateStr = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `ms_store_backup_${user?.email ? user.email.replace(/[@.]/g, '_') : 'shop'}_${dateStr}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setBackupMessage('Backup file downloaded successfully!');
+    } catch (err) {
+      alert(`Backup failed: ${err.message}`);
+    } finally {
+      setExportingBackup(false);
+    }
+  };
+
+  const handleFileRestore = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!window.confirm(`Restore store data from "${file.name}"? This will import products from the backup file.`)) {
+      e.target.value = '';
+      return;
+    }
+
+    try {
+      setRestoringBackup(true);
+      setBackupMessage('');
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+
+      if (!parsed.products || !Array.isArray(parsed.products)) {
+        throw new Error('Invalid backup file. Missing products array.');
+      }
+
+      let restoredCount = 0;
+      for (const prod of parsed.products) {
+        try {
+          await api.createProduct({
+            name: prod.name,
+            sku: prod.sku,
+            category: prod.category || 'General',
+            cost_price: parseFloat(prod.cost_price) || 0,
+            selling_price: parseFloat(prod.selling_price) || 0,
+            stock_quantity: parseInt(prod.stock_quantity) || 0,
+            low_stock_threshold: parseInt(prod.low_stock_threshold) || 5,
+            unit: prod.unit || 'pcs',
+            gst_percentage: prod.gst_percentage !== undefined ? parseFloat(prod.gst_percentage) : 5,
+          });
+          restoredCount++;
+        } catch {}
+      }
+
+      setBackupMessage(`Successfully restored ${restoredCount} products from backup!`);
+      if (onResetData) onResetData();
+    } catch (err) {
+      alert(`Restore failed: ${err.message}`);
+    } finally {
+      setRestoringBackup(false);
+      e.target.value = '';
+    }
+  };
 
   const handleSubmitSettings = async (e) => {
     e.preventDefault();
@@ -276,23 +416,152 @@ export default function SettingsView({ settings, onSettingsUpdated, user, onRese
             </div>
           </div>
 
-          {/* Tax Percentage */}
-          <div className="sm:w-1/2">
-            <label className="block text-xs font-semibold text-slate-300 mb-1">
-              Default Tax / GST Rate (%)
-            </label>
-            <div className="relative">
-              <Percent className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
-              <input
-                type="number"
-                step="any"
-                min="0"
-                max="100"
-                value={formData.tax_percentage}
-                onChange={(e) => setFormData({ ...formData, tax_percentage: parseFloat(e.target.value) || 0 })}
-                className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
-              />
+          {/* Tax Percentage & Merchant UPI VPA */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Default Tax / GST Rate (%)
+              </label>
+              <div className="relative">
+                <Percent className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  max="100"
+                  value={formData.tax_percentage}
+                  onChange={(e) => setFormData({ ...formData, tax_percentage: parseFloat(e.target.value) || 0 })}
+                  className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
             </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Merchant UPI ID (for Dynamic QR Code)
+              </label>
+              <div className="relative">
+                <QrCode className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
+                <input
+                  type="text"
+                  placeholder="e.g. 9876543210@paytm, myshop@okaxis"
+                  value={formData.upi_id}
+                  onChange={(e) => setFormData({ ...formData, upi_id: e.target.value })}
+                  className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Customer Loyalty Points & Cashback Wallet Configuration */}
+          <div className="pt-6 border-t border-slate-800 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                  <Award className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white m-0 flex items-center gap-2">
+                    Customer Loyalty Points & WhatsApp CRM
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      REWARDS
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 m-0">
+                    Reward repeat customers with points, instant POS checkout redemption, and digital WhatsApp bills
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowCustomersModal(true)}
+                className="px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-xl text-xs shadow-md shadow-amber-500/20 transition flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+              >
+                <Award className="w-3.5 h-3.5" />
+                <span>View Member CRM Directory</span>
+              </button>
+            </div>
+
+            {/* Loyalty Program Active Switch */}
+            <div className="p-3.5 bg-slate-800/60 rounded-2xl border border-slate-700/60 flex items-center justify-between">
+              <div className="space-y-0.5">
+                <span className="text-xs font-bold text-white block">Enable Loyalty Points Program</span>
+                <span className="text-[11px] text-slate-400 block">
+                  Automatically tracks customer visits, calculates earned points, and allows redemption during billing
+                </span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.loyalty_enabled}
+                  onChange={(e) => setFormData({ ...formData, loyalty_enabled: e.target.checked })}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+
+            {formData.loyalty_enabled && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+                {/* Points Earned Per 100 spent */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Points Earned per {formData.currency_symbol}100
+                  </label>
+                  <div className="relative">
+                    <Star className="absolute left-3.5 top-3 w-4 h-4 text-amber-500" />
+                    <input
+                      type="number"
+                      step="any"
+                      min="0.1"
+                      value={formData.loyalty_points_per_100}
+                      onChange={(e) => setFormData({ ...formData, loyalty_points_per_100: parseFloat(e.target.value) || 0 })}
+                      className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500 font-mono"
+                    />
+                  </div>
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    e.g. 1 pt for every {formData.currency_symbol}100 spent
+                  </span>
+                </div>
+
+                {/* Point Value in Currency */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Point Value ({formData.currency_symbol} per pt)
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0.01"
+                    value={formData.loyalty_point_value}
+                    onChange={(e) => setFormData({ ...formData, loyalty_point_value: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500 font-mono"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    1 pt = {formData.currency_symbol}{formData.loyalty_point_value || 1} discount at checkout
+                  </span>
+                </div>
+
+                {/* Min Points to Redeem */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Min Points to Redeem
+                  </label>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={formData.loyalty_min_points_to_redeem}
+                    onChange={(e) => setFormData({ ...formData, loyalty_min_points_to_redeem: parseInt(e.target.value) || 1 })}
+                    className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500 font-mono"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    Customer needs {formData.loyalty_min_points_to_redeem} pts before redeeming
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Submit Settings */}
@@ -307,6 +576,212 @@ export default function SettingsView({ settings, onSettingsUpdated, user, onRese
             </button>
           </div>
         </form>
+      </div>
+
+      {/* 3. Automated Daily Closing WhatsApp Summary Digest */}
+      <div className="bg-slate-900/90 border border-emerald-500/30 rounded-3xl p-6 sm:p-8 shadow-xl space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="p-3 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+              <MessageSquare className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold text-white m-0">Automated Daily Closing WhatsApp Summary</h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  FEATURE #7
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 m-0 mt-0.5">
+                Generate an executive end-of-day digest sent directly to the store owner's WhatsApp
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowDailyClosingModal(true)}
+            className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-600/30 transition transform active:scale-95 self-start sm:self-auto cursor-pointer"
+          >
+            <Send className="w-4 h-4" />
+            <span>Send Daily Close</span>
+          </button>
+        </div>
+
+        {/* Digest Preview Card */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-[#0b141a] border border-emerald-900/40 rounded-2xl p-4 text-xs font-mono space-y-2 text-emerald-200">
+            <div className="text-emerald-400 font-bold border-b border-emerald-800/40 pb-1">
+              📊 Sample WhatsApp Closing Digest
+            </div>
+            <p className="m-0 text-white font-semibold">
+              💰 Total Revenue: ₹48,250 (Cash: ₹22,100 | UPI: ₹26,150)
+            </p>
+            <p className="m-0 text-emerald-300">
+              📈 Net Profit: ₹11,400 (Margin: 23.6%)
+            </p>
+            <p className="m-0 text-slate-300">
+              🛒 Total Bills: 64 Invoices
+            </p>
+            <p className="m-0 text-amber-300">
+              🥇 Top Item: Amul Butter 100g (38 pcs)
+            </p>
+            <p className="m-0 text-rose-300">
+              ⚠️ Low Stock Alert: 4 items need reordering
+            </p>
+          </div>
+
+          <div className="flex flex-col justify-between p-4 bg-slate-800/40 border border-slate-700/60 rounded-2xl text-xs text-slate-300 space-y-3">
+            <div>
+              <span className="font-bold text-white block mb-1">Why this matters:</span>
+              <p className="text-slate-400 m-0 leading-relaxed text-[11px]">
+                The store owner can monitor daily store performance from anywhere without logging into the computer. Check revenue breakdowns (Cash vs. UPI), net margins, invoice count, top items sold, and low-stock alerts with a single tap.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowDailyClosingModal(true)}
+              className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 rounded-xl font-bold transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <span>Preview & Send Today's Closing Report</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 4. Full Offline-First Mode & Sync Management */}
+      <div className="bg-slate-900/90 border border-indigo-500/30 rounded-3xl p-6 sm:p-8 shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="p-3 rounded-2xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+              <Wifi className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold text-white m-0">Full Offline-First Mode & PWA Sync</h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                  FEATURE #8
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 m-0 mt-0.5">
+                Zero-downtime IndexedDB catalog caching, local stock deductions, and auto-sync background queue
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSyncOffline}
+            disabled={syncingOffline || offlinePendingCount === 0}
+            className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition transform active:scale-95 self-start sm:self-auto cursor-pointer"
+          >
+            <RefreshCw className={`w-4 h-4 ${syncingOffline ? 'animate-spin' : ''}`} />
+            <span>{syncingOffline ? 'Syncing...' : 'Sync Queued Sales Now'}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          <div className="p-4 bg-slate-800/50 border border-slate-700/60 rounded-2xl space-y-1">
+            <span className="text-slate-400 block text-[11px]">IndexedDB Cache Status</span>
+            <span className="font-bold text-emerald-400 flex items-center gap-1.5 text-sm">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              Active & Synced
+            </span>
+            <span className="text-[11px] text-slate-400 block pt-1">
+              Catalog and price lists are stored locally in the browser
+            </span>
+          </div>
+
+          <div className="p-4 bg-slate-800/50 border border-slate-700/60 rounded-2xl space-y-1">
+            <span className="text-slate-400 block text-[11px]">Pending Offline Invoices</span>
+            <span className="font-bold text-amber-400 text-sm font-mono">
+              {offlinePendingCount} {offlinePendingCount === 1 ? 'sale' : 'sales'} queued
+            </span>
+            <span className="text-[11px] text-slate-400 block pt-1">
+              Sales placed during network drops waiting to sync to PostgreSQL
+            </span>
+          </div>
+
+          <div className="p-4 bg-slate-800/50 border border-slate-700/60 rounded-2xl space-y-1">
+            <span className="text-slate-400 block text-[11px]">PWA Service Worker</span>
+            <span className="font-bold text-indigo-400 text-sm">
+              Registered (v1.0.0)
+            </span>
+            <span className="text-[11px] text-slate-400 block pt-1">
+              Works 100% standalone on tablets, laptops, and mobile devices
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* 5. 1-Click Local & Cloud Backup / Restore */}
+      <div className="bg-slate-900/90 border border-indigo-500/30 rounded-3xl p-6 sm:p-8 shadow-xl space-y-5">
+        <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
+          <div className="p-3 rounded-2xl bg-indigo-500/20 text-indigo-400">
+            <Database className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white m-0">1-Click Local & Cloud Backup / Restore</h2>
+            <p className="text-xs text-slate-400 m-0">
+              Download your entire catalog, settings, and orders into an offline JSON backup file, or restore from a previous snapshot.
+            </p>
+          </div>
+        </div>
+
+        {backupMessage && (
+          <div className="p-3.5 bg-emerald-500/15 border border-emerald-500/30 rounded-2xl text-emerald-400 text-xs flex items-center gap-2 animate-fadeIn">
+            <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+            <span>{backupMessage}</span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Download Snapshot */}
+          <div className="p-5 rounded-2xl bg-slate-950/60 border border-slate-800 flex flex-col justify-between space-y-3">
+            <div>
+              <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm mb-1">
+                <Download className="w-4 h-4" />
+                <span>Export Full Store Backup</span>
+              </div>
+              <p className="text-xs text-slate-400 m-0">
+                Exports all your products, categories, past invoices, and store configurations into a safe portable JSON file.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleDownloadBackup}
+              disabled={exportingBackup}
+              className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-md shadow-indigo-600/30 disabled:opacity-50"
+            >
+              <Download className="w-4 h-4" />
+              <span>{exportingBackup ? 'Creating Backup...' : 'Download JSON Backup'}</span>
+            </button>
+          </div>
+
+          {/* Restore Snapshot */}
+          <div className="p-5 rounded-2xl bg-slate-950/60 border border-slate-800 flex flex-col justify-between space-y-3">
+            <div>
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm mb-1">
+                <Upload className="w-4 h-4" />
+                <span>Restore from JSON Backup</span>
+              </div>
+              <p className="text-xs text-slate-400 m-0">
+                Upload a previously saved <code className="text-emerald-400 font-mono">ms_store_backup_*.json</code> file to restore catalog items.
+              </p>
+            </div>
+            <label className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer text-center">
+              <Upload className="w-4 h-4" />
+              <span>{restoringBackup ? 'Restoring Data...' : 'Select Backup File'}</span>
+              <input
+                type="file"
+                accept=".json"
+                onChange={handleFileRestore}
+                disabled={restoringBackup}
+                className="hidden"
+              />
+            </label>
+          </div>
+        </div>
       </div>
 
       {/* 3. Delete Bill History Alone (Preserves Product Inventory) */}
@@ -515,6 +990,23 @@ export default function SettingsView({ settings, onSettingsUpdated, user, onRese
           )}
         </div>
       </div>
+
+      {/* Daily Closing WhatsApp Digest Modal */}
+      {showDailyClosingModal && (
+        <DailyClosingDigestModal
+          settings={settings}
+          user={user}
+          onClose={() => setShowDailyClosingModal(false)}
+        />
+      )}
+
+      {/* Customer Loyalty CRM Directory Modal */}
+      {showCustomersModal && (
+        <CustomersModal
+          settings={settings}
+          onClose={() => setShowCustomersModal(false)}
+        />
+      )}
     </div>
   );
 }

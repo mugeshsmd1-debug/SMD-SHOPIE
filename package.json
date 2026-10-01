@@ -1,7 +1,7 @@
 {
-  "name": "ms_store",
+  "name": "smd-shopie",
   "version": "1.0.0",
-  "description": "Full-Stack Shop Billing, Stock Inventory & Profit/Loss App with 3D Effects",
+  "description": "SMD SHOPIE - Smart POS Billing, Inventory, Accounting & Profit/Loss Management",
   "main": "server/index.js",
   "scripts": {
     "server": "node server/index.js",

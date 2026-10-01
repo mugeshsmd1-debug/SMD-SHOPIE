@@ -23,10 +23,15 @@ import {
   Lock,
   Eye,
   EyeOff,
-  Key
+  Key,
+  RotateCcw,
+  MessageSquare,
+  Share2
 } from 'lucide-react';
 import TiltCard from '../components/TiltCard';
 import ReceiptModal from '../components/ReceiptModal';
+import ReturnModal from '../components/ReturnModal';
+import DailyClosingDigestModal from '../components/DailyClosingDigestModal';
 import { api } from '../services/api';
 
 export default function ProfitLossView({ settings }) {
@@ -43,7 +48,9 @@ export default function ProfitLossView({ settings }) {
 
   const [pnlData, setPnlData] = useState(null);
   const [selectedReceipt, setSelectedReceipt] = useState(null);
+  const [returnOrder, setReturnOrder] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showDigestModal, setShowDigestModal] = useState(false);
 
   // Single invoice delete with password state
   const [invoiceToDelete, setInvoiceToDelete] = useState(null);
@@ -335,10 +342,22 @@ export default function ProfitLossView({ settings }) {
             </div>
           )}
 
-          {/* Live indicator */}
-          <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span>{pnlData?.title || 'Report Loaded'}</span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setShowDigestModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition shadow-md shadow-emerald-600/30 cursor-pointer"
+              title="Generate and send daily closing executive digest to WhatsApp"
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>WhatsApp Daily Close</span>
+            </button>
+
+            {/* Live indicator */}
+            <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>{pnlData?.title || 'Report Loaded'}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -740,6 +759,14 @@ export default function ProfitLossView({ settings }) {
                         <span>View</span>
                       </button>
                       <button
+                        onClick={() => setReturnOrder(o)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-600 border border-amber-500/30 hover:border-amber-600 text-amber-300 hover:text-white text-[11px] font-semibold transition active:scale-95"
+                        title={`Process return / refund for ${o.invoice_no}`}
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Return</span>
+                      </button>
+                      <button
                         onClick={() => openDeleteInvoiceModal(o)}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-600 border border-rose-500/30 hover:border-rose-600 text-rose-300 hover:text-white text-[11px] font-semibold transition active:scale-95"
                         title={`Delete invoice ${o.invoice_no}`}
@@ -805,6 +832,17 @@ export default function ProfitLossView({ settings }) {
           receipt={selectedReceipt}
           settings={settings}
           onClose={() => setSelectedReceipt(null)}
+        />
+      )}
+
+      {/* Return & Credit Note Modal */}
+      {returnOrder && (
+        <ReturnModal
+          order={returnOrder}
+          settings={settings}
+          isOpen={!!returnOrder}
+          onClose={() => setReturnOrder(null)}
+          onReturnCompleted={() => fetchPnLData(reportMode)}
         />
       )}
 
@@ -1013,6 +1051,15 @@ export default function ProfitLossView({ settings }) {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Automated Daily Closing WhatsApp Summary Modal */}
+      {showDigestModal && (
+        <DailyClosingDigestModal
+          settings={settings}
+          defaultDate={selectedDate}
+          onClose={() => setShowDigestModal(false)}
+        />
       )}
     </div>
   );

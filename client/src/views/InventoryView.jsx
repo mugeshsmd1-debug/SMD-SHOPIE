@@ -1,10 +1,13 @@
 import React, { useState, useMemo } from 'react';
-import { Package, Plus, Search, Filter, AlertTriangle, ArrowUpDown, Edit, Trash2, Box, Eye, Layers, Clock, CheckCircle2 } from 'lucide-react';
+import { Package, Plus, Search, Filter, AlertTriangle, ArrowUpDown, Edit, Trash2, Box, Eye, Layers, Clock, CheckCircle2, Sparkles, Flame, FileText, ScanLine } from 'lucide-react';
 import ProductModal from '../components/ProductModal';
 import ProductIcon from '../components/ProductIcon';
 import RestockModal from '../components/RestockModal';
 import Warehouse3D from '../components/Warehouse3D';
 import TiltCard from '../components/TiltCard';
+import AiForecastView from '../components/AiForecastView';
+import AuditLogsModal from '../components/AuditLogsModal';
+import SupplierBillOcrModal from '../components/SupplierBillOcrModal';
 import { api } from '../services/api';
 
 export default function InventoryView({ products = [], categories = [], settings, refreshProducts }) {
@@ -18,8 +21,11 @@ export default function InventoryView({ products = [], categories = [], settings
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [restockProduct, setRestockProduct] = useState(null);
   const [isRestockModalOpen, setIsRestockModalOpen] = useState(false);
+  const [isAuditLogsOpen, setIsAuditLogsOpen] = useState(false);
+  const [isOcrModalOpen, setIsOcrModalOpen] = useState(false);
   const [activeStockLogs, setActiveStockLogs] = useState([]);
   const [showLogs, setShowLogs] = useState(false);
+  const [openingBagId, setOpeningBagId] = useState(null);
 
   const currency = settings?.currency_symbol || '₹';
 
@@ -77,6 +83,26 @@ export default function InventoryView({ products = [], categories = [], settings
     }
   };
 
+  const handleOpenBag = async (product) => {
+    if (product.stock_quantity <= 0) {
+      alert(`No sealed bags in stock for "${product.name}". Please restock first.`);
+      return;
+    }
+    const bagKg = product.bag_weight_kg || 50;
+    if (!window.confirm(`Open 1 sealed bag of "${product.name}"?\n\nThis will deduct 1 bag from sealed stock (${product.stock_quantity} -> ${product.stock_quantity - 1} bags) and add ${bagKg} kg to loose drum stock.`)) {
+      return;
+    }
+    try {
+      setOpeningBagId(product.id);
+      await api.openSealedBag(product.id, 1);
+      refreshProducts();
+    } catch (err) {
+      alert(err.message || 'Failed to open sealed bag');
+    } finally {
+      setOpeningBagId(null);
+    }
+  };
+
   const handleSaveProduct = async (productData) => {
     if (editingProduct) {
       await api.updateProduct(editingProduct.id, productData);
@@ -99,6 +125,24 @@ export default function InventoryView({ products = [], categories = [], settings
 
   const handleRestockSubmit = async (productId, restockData) => {
     await api.adjustStock(productId, restockData);
+    refreshProducts();
+  };
+
+  const handleBatchRestock = async (items) => {
+    for (const item of items) {
+      if (item.matchedProductId && item.quantity > 0) {
+        await api.adjustStock(item.matchedProductId, {
+          delta: parseFloat(item.quantity),
+          note: `Restocked via Supplier Bill OCR (@ ${currency}${parseFloat(item.costPrice).toFixed(2)})`,
+          type: 'RESTOCK',
+        });
+        if (parseFloat(item.costPrice) > 0) {
+          try {
+            await api.updateProduct(item.matchedProductId, { cost_price: parseFloat(item.costPrice) });
+          } catch {}
+        }
+      }
+    }
     refreshProducts();
   };
 
@@ -257,14 +301,45 @@ export default function InventoryView({ products = [], categories = [], settings
               onClick={() => setViewMode('3d')}
               className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition ${
                 viewMode === '3d'
-                  ? 'bg-gradient-to-r from-indigo-600 to-sky-500 text-white shadow'
+                  ? 'bg-gradient-to-r from-indigo-600 via-sky-600 to-emerald-500 text-white shadow'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              <Box className="w-3.5 h-3.5" />
-              <span>3D Warehouse</span>
+              <Flame className="w-3.5 h-3.5 text-amber-300" />
+              <span>3D Store & Heatmap</span>
+            </button>
+            <button
+              onClick={() => setViewMode('ai-forecast')}
+              className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition ${
+                viewMode === 'ai-forecast'
+                  ? 'bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-500 text-white shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-300" />
+              <span>AI Forecast</span>
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setIsAuditLogsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold rounded-xl transition"
+            title="View staff stock activity & audit trail"
+          >
+            <FileText className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Audit Trail</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsOcrModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 bg-gradient-to-r from-indigo-900/60 to-purple-900/60 hover:from-indigo-800/80 hover:to-purple-800/80 text-indigo-200 hover:text-white border border-indigo-500/40 text-xs font-semibold rounded-xl transition shadow-sm"
+            title="Scan paper vendor bill using AI Optical Character Recognition"
+          >
+            <ScanLine className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Scan Bill (OCR)</span>
+          </button>
 
           <button
             onClick={() => {
@@ -279,8 +354,16 @@ export default function InventoryView({ products = [], categories = [], settings
         </div>
       </div>
 
-      {/* 3D Warehouse Visualizer Mode */}
-      {viewMode === '3d' ? (
+      {/* View Switcher Output */}
+      {viewMode === 'ai-forecast' ? (
+        <AiForecastView
+          settings={settings}
+          onRestockProduct={(product, suggestedQty) => {
+            setRestockProduct({ ...product, suggestedQty });
+            setIsRestockModalOpen(true);
+          }}
+        />
+      ) : viewMode === '3d' ? (
         <div className="space-y-3">
           <Warehouse3D
             products={products}
@@ -321,8 +404,27 @@ export default function InventoryView({ products = [], categories = [], settings
                             <ProductIcon icon={p.image_emoji} className="w-8 h-8 object-cover" textClassName="text-2xl" />
                           </div>
                           <div>
-                            <p className="font-bold text-white text-sm m-0">{p.name}</p>
-                            <p className="text-[11px] text-slate-400 font-mono m-0">{p.sku}</p>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <p className="font-bold text-white text-sm m-0">{p.name}</p>
+                              {p.is_bundle && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                                  <span>🎁</span> Combo ({p.bundle_items?.length || 2} items)
+                                </span>
+                              )}
+                              {p.is_grain_rice && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                  <span>🌾</span> Rice ({p.bag_weight_kg || 50}kg Bag)
+                                </span>
+                              )}
+                              {p.is_grain_rice && p.allow_loose && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                                  <span>⚖️</span> Loose ₹{p.loose_selling_price || 30}/kg
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <p className="text-[11px] text-slate-400 font-mono m-0">{p.sku}</p>
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -337,11 +439,13 @@ export default function InventoryView({ products = [], categories = [], settings
                       {/* Cost Price */}
                       <td className="py-3.5 px-4 text-right font-mono text-slate-300">
                         {currency}{parseFloat(p.cost_price).toFixed(2)}
+                        {p.is_grain_rice && <span className="text-[10px] text-slate-500 block font-sans">/bag ({p.bag_weight_kg || 50}kg)</span>}
                       </td>
 
                       {/* Selling Price */}
                       <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-400">
                         {currency}{parseFloat(p.selling_price).toFixed(2)}
+                        {p.is_grain_rice && <span className="text-[10px] text-emerald-400/80 block font-sans">/whole bag</span>}
                       </td>
 
                       {/* Stock Quantity Badge */}
@@ -360,51 +464,87 @@ export default function InventoryView({ products = [], categories = [], settings
                               isOutOfStock ? 'bg-rose-400' : isLow ? 'bg-amber-400' : 'bg-emerald-400'
                             }`}
                           />
-                          {p.stock_quantity} {p.unit}
+                          {p.stock_quantity} {p.is_grain_rice ? 'Bags' : (p.unit || 'units')}
                           {isLow && ' (Low)'}
                           {isOutOfStock && ' (Empty)'}
                         </span>
+
+                        {/* Rice stock breakdown: sealed bags + loose drum kg */}
+                        {p.is_grain_rice && (
+                          <div className="mt-1.5 text-[10px] font-mono space-y-1 bg-slate-900/90 p-2 rounded-xl border border-slate-800 text-left min-w-[130px] max-w-[160px] mx-auto">
+                            <div className="flex items-center justify-between text-slate-300">
+                              <span>🎒 Sealed:</span>
+                              <strong className="text-white">{p.stock_quantity} Bags</strong>
+                            </div>
+                            <div className="flex items-center justify-between text-slate-400 text-[9px]">
+                              <span>Capacity:</span>
+                              <span>{(p.stock_quantity || 0) * (p.bag_weight_kg || 50)} kg</span>
+                            </div>
+                            <div className="flex items-center justify-between pt-1 border-t border-slate-800 text-amber-300">
+                              <span>⚖️ Drum:</span>
+                              <strong className={parseFloat(p.open_bag_loose_kg) > 0 ? "text-emerald-400 font-bold" : "text-slate-400"}>
+                                {parseFloat(p.open_bag_loose_kg || 0).toFixed(1)} kg loose
+                              </strong>
+                            </div>
+                          </div>
+                        )}
                       </td>
 
-                      {/* Inline Quick Stock Adjust (+1, +5, -1) */}
+                      {/* Inline Quick Stock Adjust (+1, +5, -1) & Open Bag */}
                       <td className="py-3.5 px-4 text-center">
-                        <div className="inline-flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700">
-                          <button
-                            type="button"
-                            title="Decrease 1 unit"
-                            disabled={p.stock_quantity <= 0}
-                            onClick={() => handleQuickAdjust(p, -1)}
-                            className="px-2 py-1 rounded bg-slate-900 hover:bg-rose-600 text-slate-300 hover:text-white font-mono font-bold text-xs disabled:opacity-40 transition"
-                          >
-                            -1
-                          </button>
-                          <button
-                            type="button"
-                            title="Add 1 unit"
-                            onClick={() => handleQuickAdjust(p, 1)}
-                            className="px-2 py-1 rounded bg-slate-900 hover:bg-emerald-600 text-slate-300 hover:text-white font-mono font-bold text-xs transition"
-                          >
-                            +1
-                          </button>
-                          <button
-                            type="button"
-                            title="Restock 5 units"
-                            onClick={() => handleQuickAdjust(p, 5)}
-                            className="px-2 py-1 rounded bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white font-mono font-bold text-xs transition"
-                          >
-                            +5
-                          </button>
-                          <button
-                            type="button"
-                            title="Open Restock Dialog"
-                            onClick={() => {
-                              setRestockProduct(p);
-                              setIsRestockModalOpen(true);
-                            }}
-                            className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-700 text-slate-400 hover:text-white text-[11px] font-semibold transition"
-                          >
-                            Custom
-                          </button>
+                        <div className="flex flex-col items-center gap-1.5">
+                          <div className="inline-flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700">
+                            <button
+                              type="button"
+                              title={p.is_grain_rice ? "Decrease 1 bag" : "Decrease 1 unit"}
+                              disabled={p.stock_quantity <= 0}
+                              onClick={() => handleQuickAdjust(p, -1)}
+                              className="px-2 py-1 rounded bg-slate-900 hover:bg-rose-600 text-slate-300 hover:text-white font-mono font-bold text-xs disabled:opacity-40 transition"
+                            >
+                              -1
+                            </button>
+                            <button
+                              type="button"
+                              title={p.is_grain_rice ? "Add 1 sealed bag" : "Add 1 unit"}
+                              onClick={() => handleQuickAdjust(p, 1)}
+                              className="px-2 py-1 rounded bg-slate-900 hover:bg-emerald-600 text-slate-300 hover:text-white font-mono font-bold text-xs transition"
+                            >
+                              +1
+                            </button>
+                            <button
+                              type="button"
+                              title={p.is_grain_rice ? "Restock 5 sealed bags" : "Restock 5 units"}
+                              onClick={() => handleQuickAdjust(p, 5)}
+                              className="px-2 py-1 rounded bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white font-mono font-bold text-xs transition"
+                            >
+                              +5
+                            </button>
+                            <button
+                              type="button"
+                              title="Open Restock Dialog"
+                              onClick={() => {
+                                setRestockProduct(p);
+                                setIsRestockModalOpen(true);
+                              }}
+                              className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-700 text-slate-400 hover:text-white text-[11px] font-semibold transition"
+                            >
+                              Custom
+                            </button>
+                          </div>
+
+                          {/* 1-Click Open Sealed Bag button for Rice */}
+                          {p.is_grain_rice && p.allow_loose && (
+                            <button
+                              type="button"
+                              disabled={p.stock_quantity <= 0 || openingBagId === p.id}
+                              onClick={() => handleOpenBag(p)}
+                              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 disabled:opacity-40 text-amber-300 border border-amber-500/40 text-[10px] font-bold transition flex items-center justify-center gap-1 shadow-sm"
+                              title={`Cut open 1 sealed bag: stock drops by 1 bag and loose drum gets +${p.bag_weight_kg || 50} kg`}
+                            >
+                              <span>✂️</span>
+                              <span>{openingBagId === p.id ? 'Opening Bag...' : `Open 1 Bag (+${p.bag_weight_kg || 50}kg)`}</span>
+                            </button>
+                          )}
                         </div>
                       </td>
 
@@ -452,6 +592,7 @@ export default function InventoryView({ products = [], categories = [], settings
       <ProductModal
         product={editingProduct}
         categories={categories}
+        allProducts={products}
         currencySymbol={currency}
         isOpen={isProductModalOpen}
         onClose={() => {
@@ -470,6 +611,21 @@ export default function InventoryView({ products = [], categories = [], settings
           setRestockProduct(null);
         }}
         onRestock={handleRestockSubmit}
+      />
+
+      {/* Audit Logs Modal */}
+      <AuditLogsModal
+        isOpen={isAuditLogsOpen}
+        onClose={() => setIsAuditLogsOpen(false)}
+      />
+
+      {/* Supplier Bill OCR Modal */}
+      <SupplierBillOcrModal
+        isOpen={isOcrModalOpen}
+        onClose={() => setIsOcrModalOpen(false)}
+        products={products}
+        onBatchRestock={handleBatchRestock}
+        currencySymbol={currency}
       />
     </div>
   );

@@ -4,7 +4,11 @@ import BillingView from './views/BillingView';
 import InventoryView from './views/InventoryView';
 import ProfitLossView from './views/ProfitLossView';
 import SettingsView from './views/SettingsView';
+import StorefrontView from './views/StorefrontView';
+import CustomerDisplayView from './views/CustomerDisplayView';
 import AuthModal from './components/AuthModal';
+import OfflineSyncBanner from './components/OfflineSyncBanner';
+import DailyClosingDigestModal from './components/DailyClosingDigestModal';
 import { api } from './services/api';
 
 export default function App() {
@@ -14,6 +18,8 @@ export default function App() {
   const [categories, setCategories] = useState([]);
   const [user, setUser] = useState(() => api.getCurrentUser());
   const [loading, setLoading] = useState(true);
+  const [showClosingReminder, setShowClosingReminder] = useState(false);
+  const [showClosingModal, setShowClosingModal] = useState(false);
 
   // Fetch all initial store data from backend for the logged-in user
   const loadInitialData = useCallback(async () => {
@@ -59,6 +65,50 @@ export default function App() {
     loadInitialData();
   }, [loadInitialData]);
 
+  // Automated daily closing WhatsApp reminder check (checks every 30s)
+  useEffect(() => {
+    const checkClosingReminder = () => {
+      try {
+        const enabled = localStorage.getItem('ms_store_auto_closing_enabled');
+        if (enabled === 'false') return;
+        const targetTime = localStorage.getItem('ms_store_auto_closing_time') || '21:30';
+        const now = new Date();
+        const todayKey = now.toISOString().slice(0, 10);
+        const lastAlert = localStorage.getItem('ms_store_last_closing_alert');
+        if (lastAlert === todayKey) return;
+
+        const currentHours = String(now.getHours()).padStart(2, '0');
+        const currentMins = String(now.getMinutes()).padStart(2, '0');
+        const currentTime = `${currentHours}:${currentMins}`;
+
+        if (currentTime >= targetTime) {
+          setShowClosingReminder(true);
+        }
+      } catch {}
+    };
+
+    checkClosingReminder();
+    const interval = setInterval(checkClosingReminder, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleOpenClosingModal = () => {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    try {
+      localStorage.setItem('ms_store_last_closing_alert', todayKey);
+    } catch {}
+    setShowClosingReminder(false);
+    setShowClosingModal(true);
+  };
+
+  const handleDismissClosingReminder = () => {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    try {
+      localStorage.setItem('ms_store_last_closing_alert', todayKey);
+    } catch {}
+    setShowClosingReminder(false);
+  };
+
   // When user signs up or logs in
   const handleAuthenticated = async (userSession) => {
     setUser(userSession);
@@ -92,6 +142,41 @@ export default function App() {
     );
   }
 
+  // Check if opening customer-facing secondary display
+  const isCustomerDisplay = (() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      return p.get('view') === 'customer-display';
+    } catch {
+      return false;
+    }
+  })();
+
+  if (isCustomerDisplay) {
+    return <CustomerDisplayView settings={settings} />;
+  }
+
+  // Check if visitor is accessing public storefront catalog link
+  const isPublicStore = (() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      return p.get('view') === 'catalog' || p.has('store');
+    } catch {
+      return false;
+    }
+  })();
+
+  if (isPublicStore) {
+    return (
+      <StorefrontView
+        settings={settings}
+        products={products}
+        user={user}
+        isPreview={false}
+      />
+    );
+  }
+
   // If user is not logged in, show Sign Up / Log In Modal
   if (!user?.email) {
     return (
@@ -113,6 +198,45 @@ export default function App() {
         onLogout={handleLogout}
       />
 
+      {/* Offline Mode & Cloud Sync Banner (Feature #8) */}
+      <OfflineSyncBanner onSyncComplete={refreshProducts} />
+
+      {/* Automated Daily Closing WhatsApp Prompt Banner (Feature #7) */}
+      {showClosingReminder && (
+        <aside aria-label="Store Closing Alert" className="no-print bg-gradient-to-r from-emerald-950 via-slate-900 to-emerald-950 border-b border-emerald-500/50 text-white px-4 py-2.5 shadow-xl animate-fadeIn">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 rounded-xl bg-emerald-500/20 text-emerald-300">
+                <span className="text-base">🔔</span>
+              </div>
+              <div>
+                <strong className="text-emerald-300 font-bold">Daily Closing Time!</strong>{' '}
+                <span className="text-slate-300">
+                  Today's executive store summary is ready. Send the daily revenue & profit report directly to your WhatsApp.
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleOpenClosingModal}
+                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs shadow-md shadow-emerald-600/30 transition cursor-pointer"
+              >
+                Send WhatsApp Digest
+              </button>
+              <button
+                type="button"
+                onClick={handleDismissClosingReminder}
+                className="text-slate-400 hover:text-white px-2 py-1 text-xs rounded hover:bg-slate-800 transition"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </aside>
+      )}
+
       {/* Main Tab View Content */}
       <main className="flex-1 pb-12">
         {activeTab === 'billing' && (
@@ -131,6 +255,15 @@ export default function App() {
             categories={categories}
             settings={settings}
             refreshProducts={refreshProducts}
+          />
+        )}
+
+        {activeTab === 'storefront' && (
+          <StorefrontView
+            settings={settings}
+            products={products}
+            user={user}
+            isPreview={true}
           />
         )}
 
@@ -162,6 +295,15 @@ export default function App() {
           </p>
         </div>
       </footer>
+
+      {/* Automated Closing Reminder Modal */}
+      {showClosingModal && (
+        <DailyClosingDigestModal
+          settings={settings}
+          user={user}
+          onClose={() => setShowClosingModal(false)}
+        />
+      )}
     </div>
   );
 }
